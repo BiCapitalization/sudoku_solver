@@ -1,8 +1,11 @@
 #include "input.hpp"
 #include "solver.hpp"
 
+#include <fmt/core.h>
+
 #include <cstdio>
 #include <string>
+#include <utility>
 
 static auto to_string(solve::sudoku const& s) -> std::string {
     auto result = std::string();

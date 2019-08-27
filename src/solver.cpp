@@ -11,14 +11,11 @@
 #include <utility>
 #include <variant>
 
-#include <cstdio>
-
 static auto encode_sudoku(solve::sudoku const& s) noexcept -> solve::toroidal_list {
 
     solve::toroidal_list list; 
     list.add_columns(solve::toroidal_list::max_columns);
 
-    // TODO: Comment and check that this is correct
     auto encoder = [] (auto i, auto j) -> bool {
 
         auto const num = j % 9;
@@ -86,7 +83,11 @@ namespace solve {
     auto verify_sudoku(sudoku const& s) noexcept -> bool {
         auto const mask = std::uint16_t{0b00000001'11111111};
         auto accumulator = [] (std::uint16_t sum, std::int8_t elem) -> std::uint16_t {
-            assert(elem > 0 && "encountered invalid value during verification");
+            // just set a high bit to fail if we encounter a bad element
+            if (elem <= 0 || elem > 9) {
+                return sum | 0b1u << 10;
+            }
+
             return sum | 0b1u << (elem - 1);
         };
 
