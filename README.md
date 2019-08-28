@@ -1,6 +1,7 @@
 # sudoku_solver
-Fast and modern sudoku solver in C++
-----
+
+Modern and moderately fast sudoku solver
+
 ## Building and Configuring the Project
 This project uses CMake. Just change to a build directory of your choice, invoke `cmake <src_dir>` and call `make`/`ninja`/your build system of choice. This will set up all dependencies and then build the project.
 
