@@ -2,230 +2,355 @@
 
 #include "utility.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <iterator>
 #include <limits>
 #include <tuple>
-#include <type_traits>
 #include <utility>
-
-#include <cstdio>
+#include <vector>
 
 namespace {
-    template <typename Variant0, typename Variant1>
-    [[nodiscard]] auto variant_equal(Variant0&& a, Variant1&& b) -> bool {
-        return std::visit(
-            [] (auto&& l, auto&& r) {
-                if constexpr (std::is_same_v<decltype(l), decltype(r)>) {
-                    return l == r;
-                }
+    struct sudoku_coordinates {
+        int num = 1;
+        int x = 0;
+        int y = 0;
+    };
 
-                return false;
-            }, std::forward<Variant0>(a), std::forward<Variant1>(b));
+    // Rows in the sudoku represent triples of the form (number, x, y) which
+    // are laid out sequentially, i.e. an index of 0 corresponds to (1, 0, 0),
+    // and index of 1 corresponds to (2, 0, 0), an index of 9 corresponds to
+    // (1, 1, 0), etc.
+    [[nodiscard]] auto row_number_to_coordinates(int row_num) noexcept 
+        -> sudoku_coordinates {
+        
+        assert(row_num >= 0 && row_num < solve::toroidal_list::rows 
+                && "Trying to access invalid row.");
+
+        auto const num = row_num % 9;
+        auto const x = (row_num / 9) % 9;
+        auto const y = row_num / (9 * 9);
+
+        return sudoku_coordinates{num, x, y};
     }
 
-    [[nodiscard]] auto choose_next_column(solve::column_head* head)
-        -> solve::column_head* {
+    // Given a constraint quadrant and a row number, which column should the
+    // corresponding node go into?
+    [[nodiscard]] auto calculate_column_index(int quadrant, int row_num) noexcept
+        -> int {
 
-       int min_count = std::numeric_limits<int>::max();
-       solve::column_head* min_col = head;
-       for (auto* ptr = head->m_right; ptr != head; ptr = ptr->m_right) {
-           std::tie(min_count, min_col) = std::min(std::tie(min_count, min_col),
-               std::tie(ptr->m_count, ptr), [] (auto a, auto b) {
-                    return std::get<0>(a) < std::get<0>(b);
-               });
-       }
+        assert(quadrant >= 0 && quadrant < 4 && "Invalid quadrant.");
 
-       return min_col;
+        auto const [num, x, y] = row_number_to_coordinates(row_num);
+
+        switch (quadrant) {
+            case 0:
+                // In the first quadrant, each column represents a constraint
+                // of the form (x, y) signifying that the cell at that position
+                // has a number in it. 
+                return x + 9 * y;
+            case 1:
+                // In the second quadrant, each column represents a constraint
+                // of the form (number, row) signifying that a row contains a
+                // certain number.
+                return 9 * 9 + num + 9 * y;
+            case 2:
+                // In the third quadrant, each column represents a constraint
+                // of the form (number, column) signifying that a column
+                // contains a certain number.
+                return 2 * 9 * 9 + num + 9 * x;
+            case 3:
+                // In the fourth quadrant, each column represents a constraint
+                // of the form (number, block) signifying that a block contains
+                // a certain number.
+                return 3 * 9 * 9 + num + 9 * (x / 3 + (y / 3) * 3);
+            default:
+                unreachable();
+                return -1;
+        }
+    }
+} /* namespace */
+
+namespace solve {
+
+    toroidal_list::node::node(column_head* head,
+            std::variant<toroidal_list::node*, toroidal_list::column_head*> up) noexcept
+        : m_header{head}, m_left{this}, m_right{this}, m_up(up), m_down(head) {}
+
+    auto toroidal_list::node::left() const noexcept -> toroidal_list::node* {
+        return m_left;
     }
 
-    bool solve_impl(solve::column_head* head,
-            std::vector<solve::node*>& solutions, int index) {
+    auto toroidal_list::node::right() const noexcept -> toroidal_list::node* {
+        return m_right;
+    }
 
-        if (head == head->m_right) {
+    auto toroidal_list::node::header() const noexcept -> toroidal_list::column_head* {
+        return m_header;
+    }
+
+    auto toroidal_list::node::up() const noexcept
+        -> std::variant<toroidal_list::node*, toroidal_list::column_head*> {
+
+        return m_up;
+    }
+
+    auto toroidal_list::node::down() const noexcept
+        -> std::variant<toroidal_list::node*, toroidal_list::column_head*> {
+
+        return m_down;
+    }
+
+    void toroidal_list::node::unlink_horizontally() noexcept {
+        // Order is important: First right, then left...
+        m_left->m_right = m_right;
+        m_right->m_left = m_left;
+    }
+
+    void toroidal_list::node::relink_horizontally() noexcept {
+        // ...to undo: First left, then right.
+        m_right->m_left = this;
+        m_left->m_right = this;
+    }
+
+    void toroidal_list::node::unlink_vertically() noexcept {
+        // Order is important: First up, then down...
+        std::visit([this] (auto* up) {
+                up->m_down = m_down;
+            }, m_up);
+
+        std::visit([this] (auto* down) {
+                down->m_up = m_up;
+            }, m_down);
+
+        m_header->decrease_count(); 
+    }
+
+    void toroidal_list::node::relink_vertically() noexcept {
+        //...to undo: First down, then up.
+        std::visit([this] (auto* down) {
+                down->m_up = this;
+            }, m_down);
+
+        std::visit([this] (auto* up) {
+                up->m_down = this;
+            }, m_up);
+
+        m_header->increase_count();
+    }
+
+    toroidal_list::column_head::column_head(toroidal_list::column_head* left,
+            toroidal_list::column_head* right)
+        : m_left{left}, m_right{right}, m_up{this}, m_down{this} {}
+
+    void toroidal_list::column_head::increase_count() noexcept {
+        m_count += 1;
+    }
+
+    void toroidal_list::column_head::decrease_count() noexcept {
+        assert(m_count > 0 && "Trying to decrement count beyond zero");
+        m_count -= 1;
+    }
+
+    void toroidal_list::column_head::unlink() noexcept {
+        m_right->m_left = m_left;
+        m_left->m_right = m_right;
+    }
+
+    void toroidal_list::column_head::relink() noexcept {
+        m_left->m_right = this;
+        m_right->m_left = this;
+    }
+
+    void toroidal_list::column_head::cover() noexcept {
+        unlink();
+
+        traverse(down_tag{}, [] (auto& down) {
+            down.traverse(right_tag{}, [] (auto& right) {
+                right.unlink_vertically();
+            });
+        });
+    }
+
+    void toroidal_list::column_head::uncover() noexcept {
+
+        traverse(up_tag{}, [] (auto& up) {
+            up.traverse(left_tag{}, [] (auto& left) {
+                left.relink_vertically();
+            });    
+        });
+
+        relink();
+    }
+    
+    toroidal_list::toroidal_list() {
+        make_columns(); 
+        make_rows();
+    }
+
+    void toroidal_list::make_columns() noexcept {
+        auto& headers = m_storage->headers; 
+
+        for (std::size_t i = 1; i < headers.size(); ++i) {
+            headers[i - 1].m_right = &headers[i];
+            headers[i].m_left = &headers[i - 1];
+        }
+
+        headers[0].m_left = &headers.back();
+        headers.back().m_right = &headers[0];
+    }
+
+    void toroidal_list::make_rows() noexcept {
+        auto& nodes = m_storage->nodes;
+        auto& headers = m_storage->headers;
+
+        auto last_vertical_nodes = std::array<node*, columns>{};
+
+        auto vertically_link = [&last_vertical_nodes, &headers]
+            (node& n, int column_index) {
+
+            // + 1 for the head node.
+            auto& current_header = headers[column_index + 1];
+
+            n.m_header = &current_header;
+            current_header.increase_count();
+
+            if (last_vertical_nodes[column_index] == nullptr) {
+                n.m_up = &current_header;
+                current_header.m_down = &n;
+            } else {
+                n.m_up = last_vertical_nodes[column_index];
+                last_vertical_nodes[column_index]->m_down = &n;
+            }
+
+            last_vertical_nodes[column_index] = &n;
+        };
+
+        for (std::size_t row_num = 0; row_num < nodes.size() / 4; ++row_num) {
+
+            auto const row_index = row_num * 4;
+
+            auto const zero_index = calculate_column_index(0, row_num);
+            vertically_link(nodes[row_index], zero_index);
+
+            for (int i = 1; i < 4; ++i) {
+                auto const index = calculate_column_index(i, row_num);
+
+                auto& current_node = nodes[row_index + i];
+                auto& last_node = nodes[row_index + i - 1];
+
+                current_node.m_left = &last_node;
+                last_node.m_right = &current_node;
+                
+                vertically_link(current_node, index);
+            }
+
+            // Finally, make the horizontal wrap-around links.
+            nodes[row_index + 3].m_right = &nodes[row_index];
+            nodes[row_index].m_left = &nodes[row_index + 3];
+        }
+
+        // Make the vertical wrap-around links.
+        for (auto* n : last_vertical_nodes) {
+            n->m_header->m_up = n;
+            n->m_down = n->m_header;
+        }
+    }
+
+    void toroidal_list::cover_row(int index) noexcept {
+        assert(index >= 0 && index < rows && "Row index out of range.");
+
+        auto& node = m_storage->nodes[index * 4];
+
+        node.traverse(right_tag{}, [] (auto& right) {
+            right.m_header->cover();
+        });
+
+        node.m_header->cover();
+    }
+
+    auto toroidal_list::select_next_head() noexcept -> toroidal_list::column_head& {
+        auto min_count = std::numeric_limits<int>::max();
+        column_head* min_head = &m_storage->headers[0];
+
+        min_head->traverse(right_tag{}, [&min_count, &min_head] (auto& right) mutable {
+
+            // Sadly, we need this because std::tie takes lvalue references so
+            // simply passing &right does not work.
+            auto* right_ptr = &right;
+            std::tie(min_count, min_head) = std::min(std::tie(min_count, min_head),
+                    std::tie(right.m_count, right_ptr), 
+                    [] (auto a, auto b) {
+                        return std::get<0>(a) < std::get<0>(b);
+            });
+        });
+
+        return *min_head;
+    }
+
+    auto toroidal_list::solve_impl(std::vector<node*>& solutions, int index) noexcept
+        -> bool {
+
+        auto& root = m_storage->headers[0];
+
+        if (&root == root.m_right) {
             return true;
         }
 
-        solve::column_head* next_column = choose_next_column(head);
+        column_head* next_column = &select_next_head();
         next_column->cover();
 
-        auto count = 0;
-        for (auto down = next_column->m_down;
-                !std::holds_alternative<solve::column_head*>(down);
-                down = std::visit([] (auto ptr) {
-                        return ptr->m_down;
-                    }, down)) {
+        bool success = false;
 
-            auto* down_node = std::get<solve::node*>(down);
-
-            solutions[index] = down_node;
-
-            for (auto right = down_node->m_right; right != down_node;
-                    right = right->m_right)  {
-                right->m_header->cover();
+        next_column->traverse(down_tag{}, [&] (auto& down) {
+            // TODO: Implement some form of early return
+            if (success) {
+                return;
             }
 
-            if (solve_impl(head, solutions, index + 1)) {
-                return true;
+            auto* down_ptr = &down;
+
+            solutions[index] = down_ptr;
+
+            down.traverse(right_tag{}, [] (auto& right) {
+                right.m_header->cover();
+            });
+
+            if (solve_impl(solutions, index + 1)) {
+                success = true;
+                return;
             }
 
-            down_node = solutions[index];
-            next_column = down_node->m_header;
+            down_ptr = solutions[index];
+            next_column = down_ptr->m_header;
 
-            for (auto left = down_node->m_left; left != down_node;
-                    left = left->m_left) {
-                left->m_header->uncover();
-            }
-            ++count;
+            down_ptr->traverse(left_tag{}, [] (auto& left) {
+                left.m_header->uncover();
+            });
+        }); 
+
+        if (success) {
+            return true;
         }
 
         next_column->uncover();
         return false;
     }
-}
 
-namespace solve {
+    auto toroidal_list::solve() noexcept -> std::vector<int> {
+        auto result = std::vector<node*>(9 * 9);
+        solve_impl(result, 0);
 
-    node::node(column_head* head, std::variant<node*, column_head*> up, int row_index) 
-        : m_header{head}, m_left{this}, m_right{this}, m_up(up), m_down(head),
-            m_row_index{row_index} {}
-
-    column_head::column_head() 
-        : m_left{this}, m_right{this}, m_up{}, m_down{} {}
-
-    column_head::column_head(column_head* left, column_head* right)
-        : m_left{left}, m_right{right}, m_up{this}, m_down{this} {}
-
-    void column_head::cover() {
-        m_right->m_left = m_left;
-        m_left->m_right = m_right;
-
-        for (auto n = m_down;
-                !std::holds_alternative<column_head*>(n);
-                n = std::visit([] (auto ptr) {
-                        return ptr->m_down;
-                    }, n)) {
-
-            auto* n_ptr = std::get<node*>(n);
-            
-            for (auto* current_node = n_ptr->m_right;
-                    current_node != n_ptr;
-                    current_node = current_node->m_right) {
-
-
-                std::visit([current_node] (auto* down) {
-                        down->m_up = current_node->m_up;
-                    }, current_node->m_down);
-
-                std::visit([current_node] (auto* up) {
-                        up->m_down = current_node->m_down;
-                    }, current_node->m_up);
-
-                current_node->m_header->m_count -= 1;
-            }
-        }
-    }
-
-    void column_head::uncover() {
-        for (auto n = m_up;
-                !std::holds_alternative<column_head*>(n);
-                n = std::visit([] (auto ptr) {
-                        return ptr->m_up;
-                    }, n)) {
-
-            auto* n_ptr = std::get<node*>(n);
-            
-            for (auto* current_node = n_ptr->m_left;
-                    current_node != n_ptr;
-                    current_node = current_node->m_left) {
-
-                std::visit([current_node] (auto* up) {
-                        up->m_down = current_node;
-                    }, current_node->m_up);
-
-                std::visit([current_node] (auto* down) {
-                        down->m_up = current_node;
-                    }, current_node->m_down);
-
-                current_node->m_header->m_count += 1;
-            }
-        }
-
-        m_left->m_right = this;
-        m_right->m_left = this;
-    }
-    
-    toroidal_list::toroidal_list() {
-        // + 1 for the root header
-        m_header_storage.reserve(max_columns + 1);
-        m_node_storage.reserve(max_rows * max_columns);
-        m_row_references.reserve(max_rows);
-    }
-
-    auto toroidal_list::add_columns(int num) -> column_head* {
-
-        assert(num >= 0 && "Cannot add a negative number of columns");
-
-        if (num == 0) {
-            return nullptr;
-        }
-
-        if (m_root == nullptr) {
-            m_header_storage.emplace_back(); 
-
-            m_root = m_header_storage.data();
-        }
-
-        auto* last_column = &m_header_storage.back();
-        for (auto i = 0; i < num; ++i) {
-            m_header_storage.emplace_back(last_column, m_root);
-            auto* new_column = &m_header_storage.back();
-
-            last_column->m_right = new_column; 
-            new_column->m_left = last_column;
-
-            last_column = new_column;
-        }
-
-        return last_column;
-    }
-
-    auto toroidal_list::add_column() -> column_head* {
-        return add_columns(1);
-    }
-
-    void toroidal_list::cover_row(int index) {
-        if (index < 0 || static_cast<std::size_t>(index) >= m_row_references.size()) {
-            return;
-        }
-
-        auto* node = m_row_references[index];
-        assert(node->m_row_index == index);
-
-        for (auto* current_node = node->m_right; current_node != node;
-                current_node = current_node->m_right) {
-
-            auto* head = current_node->m_header;
-            head->cover(); 
-        }
-
-        node->m_header->cover();
-    }
-
-    auto toroidal_list::solve() -> std::vector<int> {
-        auto result = std::vector<node*>(max_rows);
-        solve_impl(m_root, result, 0);
+        auto range_end = std::find(result.begin(), result.end(), nullptr);
 
         auto indices = std::vector<int>();
         indices.reserve(result.size());
 
-        for (auto* ptr : result) {
-
-            if (ptr == nullptr) {
-                break;
-            }
-
-            indices.push_back(ptr->m_row_index);
-        }
+        std::transform(result.begin(), range_end, std::back_inserter(indices), 
+            [&nodes = m_storage->nodes] (auto* node) {
+                return (node - nodes.data()) / 4;
+            });
 
         return indices;
     }

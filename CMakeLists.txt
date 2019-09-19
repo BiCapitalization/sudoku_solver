@@ -7,6 +7,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(ADDITIONAL_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src)
 set(GNU_CLANG_WARNING_FLAGS -Wall -Wextra -Wpedantic)
+set(GNU_CLANG_OPTIMIZATION_FLAGS
+    -march=native -mtune=native -fno-exceptions -fno-rtti)
 
 option(BuildTests "Build the test suite" OFF)
 

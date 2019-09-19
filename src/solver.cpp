@@ -9,53 +9,17 @@
 #include <random>
 #include <vector>
 #include <utility>
-#include <variant>
 
 static auto encode_sudoku(solve::sudoku const& s) noexcept -> solve::toroidal_list {
 
-    solve::toroidal_list list; 
-    list.add_columns(solve::toroidal_list::max_columns);
-
-    auto encoder = [] (auto i, auto j) -> bool {
-
-        auto const num = j % 9;
-        auto const x = (j / 9) % 9;
-        auto const y = (j / (9 * 9)) % 9;
-
-        auto const constraint_index = i / (9 * 9);
-        auto const constraint_x = (i % (9 * 9)) % 9;
-        auto const constraint_y = (i % (9 * 9)) / 9;
-
-        switch (constraint_index) {
-            case 0:
-                return x == constraint_x && y == constraint_y;
-            case 1:
-                // Here, constraint_x represents the number and constraint_y represents the
-                // row that number is in.
-                return num == constraint_x && y == constraint_y;
-            case 2:
-                // Here, constraint_x represents the number (again) and constraint_y
-                // represents the column that number is in.
-                return num == constraint_x && x == constraint_y; 
-            case 3:
-                // constraint_x represents the number and constraint_y represents the block
-                // that number is in. Furthermore, we obtain the block that we're currently
-                // in by doing some indexing adjustments.
-                return num == constraint_x && (y / 3) * 3 + x / 3 == constraint_y;
-            default:
-                assert(false && "detected out of range constraint");
-                return false;
-        }
-    };
-    
-    list.build_matrix(solve::toroidal_list::max_rows, encoder);
+    auto list = solve::toroidal_list();
 
     for (unsigned y = 0; y < 9; ++y) {
         for (unsigned x = 0; x < 9; ++x) {
             auto value = s.data[x + 9 * y];
 
             if (value != solve::sudoku::empty_field) {
-                list.cover_row(value + x * 9 + y * 9 * 9 - 1); 
+                list.cover_row(value - 1 + x * 9 + y * 9 * 9); 
             }
         }
     }
