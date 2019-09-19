@@ -136,6 +136,19 @@ namespace solve {
                     std::invoke(std::forward<Fun>(f), *right);
                 }
             }
+
+            template <typename Fun>
+            auto traverse_until(down_tag, Fun&& f) -> bool {
+                for (auto down = m_down; !std::holds_alternative<column_head*>(down);
+                        down = std::get<node*>(down)->down()) {
+
+                    if (std::invoke(std::forward<Fun>(f), *std::get<node*>(down))) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
         };
 
         struct storage {

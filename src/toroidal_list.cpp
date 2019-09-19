@@ -301,14 +301,7 @@ namespace solve {
         column_head* next_column = &select_next_head();
         next_column->cover();
 
-        bool success = false;
-
-        next_column->traverse(down_tag{}, [&] (auto& down) {
-            // TODO: Implement some form of early return
-            if (success) {
-                return;
-            }
-
+        auto found_solution = next_column->traverse_until(down_tag{}, [&] (auto& down) {
             auto* down_ptr = &down;
 
             solutions[index] = down_ptr;
@@ -318,8 +311,7 @@ namespace solve {
             });
 
             if (solve_impl(solutions, index + 1)) {
-                success = true;
-                return;
+                return true;
             }
 
             down_ptr = solutions[index];
@@ -328,9 +320,11 @@ namespace solve {
             down_ptr->traverse(left_tag{}, [] (auto& left) {
                 left.m_header->uncover();
             });
+
+            return false;
         }); 
 
-        if (success) {
+        if (found_solution) {
             return true;
         }
 
