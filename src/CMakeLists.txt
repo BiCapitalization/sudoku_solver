@@ -10,8 +10,8 @@ endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT HAS_IPO)
 
-if(HAS_IP)
-    set_property(TARGET ssolve sudoku_solve 
+if(HAS_IPO)
+    set_property(TARGET ssolve sudoku_solve
         PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
